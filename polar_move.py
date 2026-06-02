@@ -24,6 +24,7 @@ from mathutils import Vector, Matrix
 # Draw handle kept in the driver namespace so a script reload can drop the old one
 # instead of leaking a second handler that double-draws (no public list to scan).
 _NS_KEY = "_pm_draw_handle"
+_MENU_KEY = "_pm_menu_func"
 
 # meters-per-unit + suffix per explicit length unit, so the overlay text matches a
 # DISTANCE field (to_string() picks its own adaptive unit and would disagree).
@@ -46,6 +47,21 @@ _C_VERT = (0.45, 0.65, 1.0, 0.85)   # vertical leg (elevation)
 # variable-length set of vert positions doesn't fit a fixed-size scene property).
 _VERT_REST = {}   # {vert_index: local Vector} of the dragged verts at capture time
 _VERT_OBJ = ""    # name of the object whose verts we're live-dragging
+
+# viewport numeric-edit state (transient): which label is being typed + the buffer
+_PM_EDIT_ACTIVE = False
+_PM_EDIT_FIELD = ""   # 'DIST' | 'AZ' | 'EL'
+_PM_BUF = ""
+
+# event.type -> character, for typing a number directly in the viewport
+_KEY_CHAR = {
+    'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4', 'FIVE': '5',
+    'SIX': '6', 'SEVEN': '7', 'EIGHT': '8', 'NINE': '9', 'ZERO': '0',
+    'NUMPAD_1': '1', 'NUMPAD_2': '2', 'NUMPAD_3': '3', 'NUMPAD_4': '4',
+    'NUMPAD_5': '5', 'NUMPAD_6': '6', 'NUMPAD_7': '7', 'NUMPAD_8': '8',
+    'NUMPAD_9': '9', 'NUMPAD_0': '0',
+    'PERIOD': '.', 'NUMPAD_PERIOD': '.', 'MINUS': '-', 'NUMPAD_MINUS': '-',
+}
 
 
 # ---------------------------------------------------------------- math helpers
@@ -293,6 +309,54 @@ def _on_mode_change(self, context):
     _tag_redraw(context)
 
 
+# ---------------------------------------------------------------- viewport edit
+def _parse_length(scene, val):
+    """Display-unit number (e.g. mm) -> Blender units; inverse of _format_length."""
+    us = scene.unit_settings
+    sl = us.scale_length if us.scale_length else 1.0
+    if us.system == 'NONE':
+        return val / sl
+    if us.length_unit == 'ADAPTIVE':
+        meters = val
+    else:
+        fac, _ = _UNIT_TABLE.get(us.system, {}).get(us.length_unit, (1.0, ""))
+        meters = val * fac
+    return meters / sl
+
+
+def _view3d_under_mouse(context, event):
+    for area in context.screen.areas:
+        if area.type != 'VIEW_3D':
+            continue
+        for region in area.regions:
+            if region.type == 'WINDOW' and \
+                    region.x <= event.mouse_x <= region.x + region.width and \
+                    region.y <= event.mouse_y <= region.y + region.height:
+                return region, area.spaces.active.region_3d
+    return None, None
+
+
+def _pm_label_positions(context, region, rv3d):
+    """2D screen positions of the {DIST, AZ, EL} labels that are currently drawn."""
+    comp = _compute(context)
+    if comp is None:
+        return {}
+    anchor_pos, from_pos, vec, target = comp
+    foot = Vector((target.x, target.y, from_pos.z))
+
+    def p2(co):
+        return view3d_utils.location_3d_to_region_2d(region, rv3d, co)
+    a2, t2, f2 = p2(from_pos), p2(target), p2(foot)
+    out = {}
+    if a2 and t2 and vec.length > 1e-9:
+        out['DIST'] = (a2 + t2) * 0.5
+    if a2 and f2 and (foot - from_pos).length > 1e-9:
+        out['AZ'] = (a2 + f2) * 0.5
+    if f2 and t2 and abs(target.z - from_pos.z) > 1e-9:
+        out['EL'] = (f2 + t2) * 0.5
+    return out
+
+
 # ---------------------------------------------------------------- overlay
 def _dash_2d(a, b, dash=11.0, gap=7.0):
     """Screen-space dashed segment a->b as a flat list of LINES endpoints."""
@@ -390,14 +454,36 @@ def _draw_overlay():
         blf.position(font, p2d.x - w * 0.5 + dx, p2d.y + dy * ui, 0.0)
         blf.draw(font, text)
 
+    edit = _PM_EDIT_ACTIVE
+    green = (0.3, 1.0, 0.4, 1.0)        # color of the field being typed
+
     if a2 and t2 and vec.length > 1e-9:
-        label((a2 + t2) * 0.5, _format_length(ctx.scene, vec.length), _C_MAIN)
+        if edit and _PM_EDIT_FIELD == 'DIST':
+            txt = (_PM_BUF + "|") if _PM_BUF else _format_length(ctx.scene, vec.length)
+            label((a2 + t2) * 0.5, txt, green)
+        else:
+            label((a2 + t2) * 0.5, _format_length(ctx.scene, vec.length), _C_MAIN)
     if horiz and a2 and f2:
-        label((a2 + f2) * 0.5, "H {:.1f}°".format(math.degrees(s.azimuth)),
-              _C_HORIZ, dy=-14.0)
+        if edit and _PM_EDIT_FIELD == 'AZ':
+            txt = (_PM_BUF + "|") if _PM_BUF else "{:.1f}°".format(math.degrees(s.azimuth))
+            label((a2 + f2) * 0.5, txt, green, dy=-14.0)
+        else:
+            label((a2 + f2) * 0.5, "H {:.1f}°".format(math.degrees(s.azimuth)),
+                  _C_HORIZ, dy=-14.0)
     if vert and f2 and t2:
-        label((f2 + t2) * 0.5, "V {:.1f}°".format(math.degrees(s.elevation)),
-              _C_VERT, dx=18.0, dy=0.0)
+        if edit and _PM_EDIT_FIELD == 'EL':
+            txt = (_PM_BUF + "|") if _PM_BUF else "{:.1f}°".format(math.degrees(s.elevation))
+            label((f2 + t2) * 0.5, txt, green, dx=18.0, dy=0.0)
+        else:
+            label((f2 + t2) * 0.5, "V {:.1f}°".format(math.degrees(s.elevation)),
+                  _C_VERT, dx=18.0, dy=0.0)
+
+    if edit:                            # mode hint at the bottom-left of the viewport
+        blf.size(font, 12.0 * ui)
+        blf.color(font, 1.0, 1.0, 1.0, 0.95)
+        blf.position(font, 18.0 * ui, 18.0 * ui, 0.0)
+        blf.draw(font, "Type value  ·  Enter = apply  ·  Esc = exit  ·  "
+                       "click distance / H / V to pick")
 
     blf.disable(font, blf.SHADOW)
 
@@ -586,6 +672,91 @@ class PM_OT_clear(Operator):
         return {'FINISHED'}
 
 
+class PM_OT_edit_viewport(Operator):
+    bl_idname = "object.pm_edit_viewport"
+    bl_label = "Type value in viewport"
+    bl_description = ("Click the distance / H / V label in the viewport and type a new "
+                      "value (Enter = apply, Esc = exit)")
+
+    def invoke(self, context, event):
+        global _PM_EDIT_ACTIVE, _PM_EDIT_FIELD, _PM_BUF
+        if _compute(context) is None:
+            self.report({'WARNING'}, "Set an anchor (and reference) first")
+            return {'CANCELLED'}
+        context.scene.pm_settings.show_preview = True
+        _PM_EDIT_ACTIVE = True
+        _PM_EDIT_FIELD = 'DIST'
+        _PM_BUF = ""
+        context.window_manager.modal_handler_add(self)
+        _tag_redraw(context)
+        return {'RUNNING_MODAL'}
+
+    def _finish(self, context):
+        global _PM_EDIT_ACTIVE, _PM_BUF
+        _PM_EDIT_ACTIVE = False
+        _PM_BUF = ""
+        _tag_redraw(context)
+
+    def _apply(self, context):
+        global _PM_BUF
+        try:
+            val = float(_PM_BUF)
+        except ValueError:
+            val = None
+        if val is not None:
+            s = context.scene.pm_settings
+            if _PM_EDIT_FIELD == 'DIST':
+                if val > 0.0:
+                    s.distance = _parse_length(context.scene, val)
+            elif _PM_EDIT_FIELD == 'AZ':
+                s.azimuth = math.radians(val)
+            elif _PM_EDIT_FIELD == 'EL':
+                s.elevation = math.radians(val)
+        _PM_BUF = ""
+        _tag_redraw(context)
+
+    def modal(self, context, event):
+        global _PM_EDIT_FIELD, _PM_BUF
+        if event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
+            return {'PASS_THROUGH'}
+
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            region, rv3d = _view3d_under_mouse(context, event)
+            if region and rv3d:
+                labels = _pm_label_positions(context, region, rv3d)
+                mx, my = event.mouse_x - region.x, event.mouse_y - region.y
+                best, best_d = None, 45.0
+                for key, p in labels.items():
+                    d = ((p.x - mx) ** 2 + (p.y - my) ** 2) ** 0.5
+                    if d < best_d:
+                        best_d, best = d, key
+                if best is not None:
+                    _PM_EDIT_FIELD = best
+                    _PM_BUF = ""
+                    _tag_redraw(context)
+            return {'RUNNING_MODAL'}
+
+        if event.value == 'PRESS':
+            ch = _KEY_CHAR.get(event.type)
+            if ch is not None:
+                _PM_BUF += ch
+                _tag_redraw(context)
+                return {'RUNNING_MODAL'}
+            if event.type == 'BACK_SPACE':
+                _PM_BUF = _PM_BUF[:-1]
+                _tag_redraw(context)
+                return {'RUNNING_MODAL'}
+            if event.type in {'RET', 'NUMPAD_ENTER'}:
+                self._apply(context)
+                self._finish(context)          # Enter applies and exits
+                return {'FINISHED'}
+            if event.type in {'ESC', 'RIGHTMOUSE'}:
+                self._finish(context)
+                return {'FINISHED'}
+
+        return {'RUNNING_MODAL'}
+
+
 # ---------------------------------------------------------------- panel
 class PM_PT_panel(Panel):
     bl_label = "Polar Move"
@@ -620,6 +791,7 @@ class PM_PT_panel(Panel):
         col.prop(s, "distance")
         col.prop(s, "azimuth")
         col.prop(s, "elevation")
+        layout.operator("object.pm_edit_viewport", text="Type in viewport", icon='FONT_DATA')
 
         m = _measure_current(context)
         if m is not None:
@@ -646,9 +818,39 @@ class PM_PT_panel(Panel):
         layout.operator("object.pm_clear", icon='X')
 
 
+def _pm_deferred_launch():
+    try:
+        bpy.ops.object.pm_edit_viewport('INVOKE_DEFAULT')
+    except Exception as e:
+        print("[Polar Move]", e)
+    return None
+
+
+class PM_OT_launch_edit(Operator):
+    bl_idname = "object.pm_launch_edit"
+    bl_label = "Polar move: type value"
+    bl_description = "Start typing distance / angle in the viewport"
+
+    def execute(self, context):
+        # a modal started straight from a menu gets cancelled when the menu
+        # closes, so defer the real modal to the next timer tick
+        bpy.app.timers.register(_pm_deferred_launch, first_interval=0.0)
+        return {'FINISHED'}
+
+
+def _pm_context_menu(self, context):
+    s = getattr(context.scene, "pm_settings", None)
+    if s is not None and s.anchor_object:    # only once a Polar Move is set up
+        self.layout.operator("object.pm_launch_edit",
+                             text="Polar move: type value", icon='FONT_DATA')
+
+
+_MENU_TARGETS = ("VIEW3D_MT_object_context_menu", "VIEW3D_MT_edit_mesh_context_menu")
+
+
 # ---------------------------------------------------------------- registration
 classes = (PM_Settings, PM_OT_set_anchor, PM_OT_set_reference, PM_OT_measure,
-           PM_OT_place, PM_OT_clear, PM_PT_panel)
+           PM_OT_edit_viewport, PM_OT_launch_edit, PM_OT_place, PM_OT_clear, PM_PT_panel)
 
 
 def register():
@@ -666,9 +868,32 @@ def register():
     ns[_NS_KEY] = bpy.types.SpaceView3D.draw_handler_add(
         _draw_overlay, (), 'WINDOW', 'POST_PIXEL')
 
+    old_menu = ns.get(_MENU_KEY)          # drop menu items left by a previous load
+    for name in _MENU_TARGETS:
+        mt = getattr(bpy.types, name, None)
+        if mt is None:
+            continue
+        if old_menu is not None:
+            try:
+                mt.remove(old_menu)
+            except Exception:
+                pass
+        mt.append(_pm_context_menu)
+    ns[_MENU_KEY] = _pm_context_menu
+
 
 def unregister():
     ns = bpy.app.driver_namespace
+    m = ns.get(_MENU_KEY)
+    if m is not None:
+        for name in _MENU_TARGETS:
+            mt = getattr(bpy.types, name, None)
+            if mt is not None:
+                try:
+                    mt.remove(m)
+                except Exception:
+                    pass
+        ns[_MENU_KEY] = None
     h = ns.get(_NS_KEY)
     if h is not None:
         try:
