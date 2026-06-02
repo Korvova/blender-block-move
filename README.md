@@ -32,6 +32,8 @@ See and edit the length of the selected edge, CAD-style.
 - Type a new length to resize the active edge (respects scene units, e.g. mm)
 - Resize anchor: from the center, or keep one end (with a flip)
 - Viewport overlay drawing each selected edge's length next to it
+- **Type in the viewport**: hit *Type in viewport* (panel or right-click menu),
+  click a length label, type a value, **Enter** applies and exits
 - **Set all selected** resizes every selected edge to the active one's length
 
 ### Polar Move — `polar_move.py`
@@ -46,6 +48,8 @@ reference vertex.
   tool and never snaps when you start
 - Viewport overlay: a dashed guide to the target with distance/angle labels
 - **Live drag** moves the object/vertices in real time as you change the values
+- **Type in the viewport**: hit *Type in viewport* (panel or right-click menu),
+  click the distance / H / V label, type a value, **Enter** applies and exits
 - Object and Vertices modes
 
 ## Scripts
