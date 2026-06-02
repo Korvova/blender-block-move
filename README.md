@@ -1,72 +1,74 @@
-# Intersection Highlighter
+# Blender Modeling Add-ons
 
-A Blender add-on that highlights when mesh objects touch or intersect, and can
-physically block one object from passing through another while you move it.
+A small collection of Blender add-ons (and one helper script) for precise,
+CAD-style modeling and 3D-print prep. Each add-on adds its own tab to the 3D
+Viewport sidebar (press **N**).
 
-## Features
+## Add-ons
 
-- **Live 3-state highlighting** in the viewport:
-  - apart → original color
-  - touching → blue
-  - intersecting → red
-- **Check scope**: selected objects (pairwise), the active object vs. the
-  others, or every mesh in the scene.
-- **Two detection methods**: *Precise* (exact triangle-level test via BVH) or
-  *Fast* (axis-aligned bounding boxes).
-- **No-intersection lock**: pick two objects and stop one from penetrating the
-  other. As you drag, it slides up to contact and is snapped back if it would
-  pass through — a "physical wall".
-- **Concave-safe**: works with holes and recesses (e.g. a peg dropping to the
-  floor of a pocket), not just convex boxes.
-- Each object's original viewport color is stored on the object, so highlights
-  always restore cleanly — even after reloading the add-on or reopening the file.
+### Intersection Highlighter — `intersection_highlighter.py`
+Sidebar tab: **Intersect** · Blender 3.0+
+
+Highlights when mesh objects touch or intersect, live or on demand:
+- 3-state coloring: apart → original, touching → blue, intersecting → red
+- Scope: selected (pairwise), active vs. others, or all meshes
+- Precise (triangle/BVH) or Fast (bounding-box) detection
+- **No-intersection lock**: pick two objects and block one from passing through
+  the other while you drag it (a "physical wall"); concave-safe (holes/recesses)
+
+### Solid Collision — `solid_collision.py`
+Sidebar tab: **Solid** · Blender 3.0+
+
+Mark objects as *solid*; moving one pushes the others out of the way so they
+never overlap.
+- Live mode resolves overlaps as you drag, or **Separate now** on demand
+- Adjustable clearance gap and solver iterations
+- Bounding-box (AABB) minimum-translation resolution
+
+### Edge Length Editor — `edge_length_editor.py`
+Sidebar tab: **Edge** (Edit Mode) · Blender 4.0+
+
+See and edit the length of the selected edge, CAD-style.
+- Type a new length to resize the active edge (respects scene units, e.g. mm)
+- Resize anchor: from the center, or keep one end (with a flip)
+- Viewport overlay drawing each selected edge's length next to it
+- **Set all selected** resizes every selected edge to the active one's length
+
+### Polar Move — `polar_move.py`
+Sidebar tab: **Move** · Blender 4.0+
+
+Place an object — or selected vertices — at a distance and angle from a
+reference vertex.
+- Pick an **anchor** vertex (the handle) and a **reference** vertex
+- Dial **distance + horizontal/vertical angle** (world axes); the anchor lands
+  at that polar offset from the reference
+- Shows the **current gap** between the two vertices, so it doubles as a measure
+  tool and never snaps when you start
+- Viewport overlay: a dashed guide to the target with distance/angle labels
+- **Live drag** moves the object/vertices in real time as you change the values
+- Object and Vertices modes
+
+## Scripts
+
+### View Montage — `view_montage.py`
+Not an add-on — run it from Blender's **Text editor** (*Run Script*).
+
+Renders 6 orthographic views (front / back / top / left / right / bottom) of the
+target via a fast OpenGL viewport render and tiles them into a single PNG for
+quick modeling review. Edit the `PROJECT` / `OUT` paths and `TARGET` at the top
+of the file before running.
+
+## Installing an add-on
+
+1. Download the `.py` file (use **Code → Download ZIP**, or clone the repo).
+2. In Blender: **Edit → Preferences → Add-ons**.
+3. Click **Install…** (Blender 4.2+: the **▾** dropdown → **Install from Disk…**)
+   and pick the file.
+4. Enable the add-on in the list.
+5. In the 3D Viewport press **N** and open the add-on's tab.
 
 ## Requirements
 
-- Blender 3.0 or newer.
-
-## Installation
-
-1. Download [`intersection_highlighter.py`](intersection_highlighter.py)
-   (use **Code → Download ZIP**, or clone the repo).
-2. In Blender: **Edit → Preferences → Add-ons**.
-3. Click **Install…** (Blender 4.2+: the **▾** dropdown → **Install from Disk…**)
-   and select `intersection_highlighter.py`.
-4. Enable **Object: Intersection Highlighter**.
-5. In the 3D Viewport press **N** to open the sidebar and pick the **Intersect** tab.
-
-## Usage
-
-### Highlighting
-
-1. Select the mesh objects you want to check.
-2. Set **Check** (scope) and **Method**.
-3. Click **Check now** for a one-off test, or enable **Live highlight** to update
-   continuously as you move objects.
-4. Tune **Hit color**, **Touch color**, and **Touch gap** (the largest gap or
-   shallow overlap that still counts as "touching").
-5. **Clear** turns everything off and restores the original colors.
-
-> Highlighting paints the object's *viewport color*, which is only visible in
-> **Solid** shading with color set to **Object**. Leave **Auto viewport color**
-> enabled and the add-on switches that on for you.
-
-### No-intersection lock
-
-1. Select exactly two mesh objects.
-2. Under **No-intersection lock**, click **Set pair** (the two objects appear in
-   the slots).
-3. Enable **Block intersection**.
-4. Move either object: it can touch its partner but is blocked from passing
-   through.
-
-## Notes & limitations
-
-- The block is a **post-move snap-back**: Blender applies the move and the add-on
-  reverts it if it caused penetration. During a drag the object can jitter right
-  at the boundary, and a very fast flick that skips over contact in a single
-  frame stops at the last safe position (just short of contact) rather than
-  exactly at contact.
-- Works for **unparented** objects moved by their location (not parented or
-  constrained rigs).
-- Touching is always allowed; only real solid interpenetration is blocked.
+- Blender 3.0+ for Intersection Highlighter and Solid Collision
+- Blender 4.0+ for Edge Length Editor and Polar Move (they use the GPU / `blf`
+  overlay API)
