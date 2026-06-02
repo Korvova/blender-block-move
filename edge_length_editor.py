@@ -25,6 +25,7 @@ _MAX_LABELS = 100
 # find and remove the previous handler instead of leaking a second one that would
 # double-draw every label.
 _NS_KEY = "_ele_draw_handle"
+_MENU_KEY = "_ele_menu_func"
 
 # meters-per-unit and suffix for each explicit length unit, so the overlay text
 # matches what Blender prints in a DISTANCE field (to_string() would pick its own
@@ -43,6 +44,21 @@ _UNIT_TABLE = {
         'INCHES': (0.0254, "in"),
         'THOU': (2.54e-5, "thou"),
     },
+}
+
+# viewport numeric-edit state (transient): the edge being typed into + the buffer
+_EDIT_ACTIVE = False
+_EDIT_EDGE = -1
+_EDIT_BUF = ""
+
+# event.type -> character, for typing a number directly in the viewport
+_KEY_CHAR = {
+    'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4', 'FIVE': '5',
+    'SIX': '6', 'SEVEN': '7', 'EIGHT': '8', 'NINE': '9', 'ZERO': '0',
+    'NUMPAD_1': '1', 'NUMPAD_2': '2', 'NUMPAD_3': '3', 'NUMPAD_4': '4',
+    'NUMPAD_5': '5', 'NUMPAD_6': '6', 'NUMPAD_7': '7', 'NUMPAD_8': '8',
+    'NUMPAD_9': '9', 'NUMPAD_0': '0',
+    'PERIOD': '.', 'NUMPAD_PERIOD': '.', 'MINUS': '-', 'NUMPAD_MINUS': '-',
 }
 
 
@@ -128,6 +144,64 @@ def _redraw_update(self, context):
     _tag_redraw(context)
 
 
+def _parse_length(scene, val):
+    """Display-unit number (e.g. mm) -> Blender units; inverse of _format_length."""
+    us = scene.unit_settings
+    sl = us.scale_length if us.scale_length else 1.0
+    if us.system == 'NONE':
+        return val / sl
+    if us.length_unit == 'ADAPTIVE':
+        meters = val
+    else:
+        fac, _ = _UNIT_TABLE.get(us.system, {}).get(us.length_unit, (1.0, ""))
+        meters = val * fac
+    return meters / sl
+
+
+def _view3d_under_mouse(context, event):
+    """The VIEW_3D WINDOW region + its rv3d under the cursor, or (None, None)."""
+    for area in context.screen.areas:
+        if area.type != 'VIEW_3D':
+            continue
+        for region in area.regions:
+            if region.type == 'WINDOW' and \
+                    region.x <= event.mouse_x <= region.x + region.width and \
+                    region.y <= event.mouse_y <= region.y + region.height:
+                return region, area.spaces.active.region_3d
+    return None, None
+
+
+def _pick_edge_label(obj, region, rv3d, mx, my, thresh=45.0):
+    """Index of the selected edge whose midpoint label is nearest (mx, my)."""
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.edges.ensure_lookup_table()
+    bm.edges.index_update()
+    mw = obj.matrix_world
+    best, best_d = None, thresh
+    for e in bm.edges:
+        if not e.select:
+            continue
+        mid = mw @ ((e.verts[0].co + e.verts[1].co) * 0.5)
+        co = view3d_utils.location_3d_to_region_2d(region, rv3d, mid)
+        if co is None:
+            continue
+        d = ((co.x - mx) ** 2 + (co.y - my) ** 2) ** 0.5
+        if d < best_d:
+            best_d, best = d, e.index
+    return best
+
+
+def _set_active_edge(bm, idx):
+    bm.edges.ensure_lookup_table()
+    if 0 <= idx < len(bm.edges):
+        e = bm.edges[idx]
+        e.select_set(True)
+        bm.select_history.clear()
+        bm.select_history.add(e)
+        return e
+    return None
+
+
 # ---------------------------------------------------------------- length get/set
 # `length` is a computed property: get reads the active edge live (so it always
 # reflects the current selection without us tracking selection changes), and set
@@ -195,18 +269,26 @@ def _draw_overlay():
     blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.9)
     blf.shadow_offset(font_id, 1, -1)
 
+    if _EDIT_ACTIVE:
+        bm.edges.index_update()         # keep .index valid to match _EDIT_EDGE
+
     for e in edges:
         a = mw @ e.verts[0].co
         b = mw @ e.verts[1].co
         co = view3d_utils.location_3d_to_region_2d(region, rv3d, (a + b) * 0.5)
         if co is None:                  # midpoint behind the camera / clipped
             continue
-        text = _format_length(scene, (b - a).length)
-        w, h = blf.dimensions(font_id, text)
-        if e is active:
-            blf.color(font_id, 1.0, 0.85, 0.1, 1.0)
+        if _EDIT_ACTIVE and e.index == _EDIT_EDGE:
+            # show the typed buffer (+ caret), or the live length when nothing typed
+            text = (_EDIT_BUF + "|") if _EDIT_BUF else _format_length(scene, (b - a).length)
+            blf.color(font_id, 0.3, 1.0, 0.4, 1.0)      # green = edit target
         else:
-            blf.color(font_id, 1.0, 1.0, 1.0, 0.85)
+            text = _format_length(scene, (b - a).length)
+            if e is active:
+                blf.color(font_id, 1.0, 0.85, 0.1, 1.0)
+            else:
+                blf.color(font_id, 1.0, 1.0, 1.0, 0.85)
+        w, h = blf.dimensions(font_id, text)
         blf.position(font_id, co.x - w * 0.5, co.y + 6.0 * ui, 0.0)
         blf.draw(font_id, text)
 
@@ -221,6 +303,13 @@ def _draw_overlay():
             mw_, mh_ = blf.dimensions(font_id, mk)
             blf.position(font_id, cok.x - mw_ * 0.5, cok.y - mh_ * 0.5, 0.0)
             blf.draw(font_id, mk)
+
+    if _EDIT_ACTIVE:                    # mode hint at the bottom-left of the viewport
+        blf.size(font_id, 12.0 * ui)
+        blf.color(font_id, 1.0, 1.0, 1.0, 0.95)
+        blf.position(font_id, 18.0 * ui, 18.0 * ui, 0.0)
+        blf.draw(font_id, "Type length  ·  Enter = apply  ·  Esc = exit  ·  "
+                          "click a number to pick another edge")
 
     blf.disable(font_id, blf.SHADOW)
 
@@ -295,6 +384,104 @@ class ELE_OT_apply_to_selected(Operator):
         return {'FINISHED'}
 
 
+class ELE_OT_edit_viewport(Operator):
+    bl_idname = "mesh.ele_edit_viewport"
+    bl_label = "Type length in viewport"
+    bl_description = ("Click an edge's length label in the viewport and type a new "
+                      "value (Enter = apply, Esc = exit)")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def invoke(self, context, event):
+        global _EDIT_ACTIVE, _EDIT_BUF, _EDIT_EDGE
+        obj = context.edit_object
+        if obj is None or obj.type != 'MESH':
+            self.report({'WARNING'}, "Enter Edit Mode first")
+            return {'CANCELLED'}
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.edges.index_update()
+        e = _active_or_first_edge(bm)
+        if e is None:
+            self.report({'WARNING'}, "Select an edge first")
+            return {'CANCELLED'}
+        context.scene.ele_settings.overlay = True
+        _EDIT_EDGE = e.index
+        _EDIT_BUF = ""
+        _EDIT_ACTIVE = True
+        context.window_manager.modal_handler_add(self)
+        _tag_redraw(context)
+        return {'RUNNING_MODAL'}
+
+    def _finish(self, context):
+        global _EDIT_ACTIVE, _EDIT_BUF
+        _EDIT_ACTIVE = False
+        _EDIT_BUF = ""
+        _tag_redraw(context)
+
+    def _apply(self, context):
+        global _EDIT_BUF
+        try:
+            val = float(_EDIT_BUF)
+        except ValueError:
+            val = None
+        if val is not None and val > 0.0:
+            obj = context.edit_object
+            bm = bmesh.from_edit_mesh(obj.data)
+            _set_active_edge(bm, _EDIT_EDGE)
+            bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+            context.scene.ele_settings.length = _parse_length(context.scene, val)
+        _EDIT_BUF = ""
+        _tag_redraw(context)
+
+    def modal(self, context, event):
+        global _EDIT_BUF, _EDIT_EDGE
+        if context.edit_object is None:
+            self._finish(context)
+            return {'CANCELLED'}
+
+        # let the user still orbit/zoom the view
+        if event.type in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
+            return {'PASS_THROUGH'}
+
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            region, rv3d = _view3d_under_mouse(context, event)
+            if region and rv3d:
+                idx = _pick_edge_label(context.edit_object, region, rv3d,
+                                       event.mouse_x - region.x,
+                                       event.mouse_y - region.y)
+                if idx is not None:
+                    bm = bmesh.from_edit_mesh(context.edit_object.data)
+                    _set_active_edge(bm, idx)
+                    bmesh.update_edit_mesh(context.edit_object.data,
+                                           loop_triangles=False, destructive=False)
+                    _EDIT_EDGE = idx
+                    _EDIT_BUF = ""
+                    _tag_redraw(context)
+            return {'RUNNING_MODAL'}
+
+        if event.value == 'PRESS':
+            ch = _KEY_CHAR.get(event.type)
+            if ch is not None:
+                _EDIT_BUF += ch
+                _tag_redraw(context)
+                return {'RUNNING_MODAL'}
+            if event.type == 'BACK_SPACE':
+                _EDIT_BUF = _EDIT_BUF[:-1]
+                _tag_redraw(context)
+                return {'RUNNING_MODAL'}
+            if event.type in {'RET', 'NUMPAD_ENTER'}:
+                self._apply(context)
+                self._finish(context)          # Enter applies and exits
+                return {'FINISHED'}
+            if event.type in {'ESC', 'RIGHTMOUSE'}:
+                self._finish(context)
+                return {'FINISHED'}
+
+        return {'RUNNING_MODAL'}
+
+
 # ---------------------------------------------------------------- panel
 class ELE_PT_panel(Panel):
     bl_label = "Edge Length"
@@ -319,6 +506,8 @@ class ELE_PT_panel(Panel):
             layout.label(text="Select an edge", icon='INFO')
         else:
             layout.prop(s, "length", text="Length")
+            layout.operator("mesh.ele_edit_viewport", text="Type in viewport",
+                            icon='FONT_DATA')
             if n_sel > 1:
                 layout.label(text="active of {} selected".format(n_sel), icon='EDGESEL')
 
@@ -338,8 +527,38 @@ class ELE_PT_panel(Panel):
             col.prop(s, "show_all")
 
 
+def _ele_deferred_launch():
+    try:
+        bpy.ops.mesh.ele_edit_viewport('INVOKE_DEFAULT')
+    except Exception as e:
+        print("[Edge Length Editor]", e)
+    return None
+
+
+class ELE_OT_launch_edit(Operator):
+    bl_idname = "mesh.ele_launch_edit"
+    bl_label = "Type edge length"
+    bl_description = "Start typing an edge's length in the viewport"
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def execute(self, context):
+        # a modal started straight from a menu gets cancelled when the menu
+        # closes, so defer the real modal to the next timer tick
+        bpy.app.timers.register(_ele_deferred_launch, first_interval=0.0)
+        return {'FINISHED'}
+
+
+def _ele_context_menu(self, context):
+    self.layout.operator("mesh.ele_launch_edit",
+                         text="Type edge length", icon='FONT_DATA')
+
+
 # ---------------------------------------------------------------- registration
-classes = (ELE_Settings, ELE_OT_apply_to_selected, ELE_PT_panel)
+classes = (ELE_Settings, ELE_OT_apply_to_selected, ELE_OT_edit_viewport,
+           ELE_OT_launch_edit, ELE_PT_panel)
 
 
 def register():
@@ -357,9 +576,25 @@ def register():
     ns[_NS_KEY] = bpy.types.SpaceView3D.draw_handler_add(
         _draw_overlay, (), 'WINDOW', 'POST_PIXEL')
 
+    old_menu = ns.get(_MENU_KEY)         # drop a menu item left by a previous load
+    if old_menu is not None:
+        try:
+            bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(old_menu)
+        except Exception:
+            pass
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(_ele_context_menu)
+    ns[_MENU_KEY] = _ele_context_menu
+
 
 def unregister():
     ns = bpy.app.driver_namespace
+    m = ns.get(_MENU_KEY)
+    if m is not None:
+        try:
+            bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(m)
+        except Exception:
+            pass
+        ns[_MENU_KEY] = None
     h = ns.get(_NS_KEY)
     if h is not None:
         try:
