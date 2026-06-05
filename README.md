@@ -52,6 +52,23 @@ reference vertex.
   click the distance / H / V label, type a value, **Enter** applies and exits
 - Object and Vertices modes
 
+### Ruler Mark — `ruler_mark.py`
+Sidebar tab: **Ruler** · Blender 4.0+ · use alongside the built-in **Measure** tool
+
+CAD-style helpers that ride on top of Blender's native Measure (ruler) tool — draw
+rulers as usual, then edit and stamp them:
+- **Pick any ruler** to work on: click it in the viewport (an armed *Pick* mode with a
+  viewport hint), or step ◀ ▶; the selected ruler is highlighted
+- **Edit its length and angle** (horizontal / vertical) from the panel — the on-screen
+  ruler updates live (it re-activates Measure to refresh the cached gizmo)
+- **Drop a vertex or Empty** at the ruler's end (or both ends), into a `Marks` mesh /
+  `Mark` objects
+- **Convert a ruler to a mesh line** (`RulerLine` — edges through all its points)
+- **Clear all rulers** in one click
+
+> Rulers are only visible while the Measure tool is the active tool (Blender behaviour).
+> In Blender 5.x the ruler data lives in `bpy.data.annotations` → `RulerData3D`.
+
 ## Scripts
 
 ### View Montage — `view_montage.py`
@@ -74,5 +91,5 @@ of the file before running.
 ## Requirements
 
 - Blender 3.0+ for Intersection Highlighter and Solid Collision
-- Blender 4.0+ for Edge Length Editor and Polar Move (they use the GPU / `blf`
-  overlay API)
+- Blender 4.0+ for Edge Length Editor, Polar Move, and Ruler Mark (they use the GPU /
+  `blf` overlay API)
