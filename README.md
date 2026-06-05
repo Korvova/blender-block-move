@@ -69,6 +69,18 @@ rulers as usual, then edit and stamp them:
 > Rulers are only visible while the Measure tool is the active tool (Blender behaviour).
 > In Blender 5.x the ruler data lives in `bpy.data.annotations` → `RulerData3D`.
 
+### Snap Cage — `snap_cage.py`
+Sidebar tab: **Snap** · Blender 4.0+ · hotkey **Ctrl+Shift+Space**
+
+Drops an NxNxN vertex-snapping grid centred on the selected vertex so you can model
+off it — a portable construction lattice.
+- In Edit Mode, select a vertex and press the hotkey (or **Cage at selected vertex**):
+  the cage appears on that vertex and Vertex snapping turns on
+- **Follow active vertex**: the cage re-homes onto the new active vertex after each
+  extrude/select, settling first so it stays a stable snap target during a drag
+- Tune **points-per-axis** and **size** (odd counts keep a node on the vertex)
+- Press the hotkey again to remove the cage
+
 ## Scripts
 
 ### View Montage — `view_montage.py`
@@ -93,3 +105,4 @@ of the file before running.
 - Blender 3.0+ for Intersection Highlighter and Solid Collision
 - Blender 4.0+ for Edge Length Editor, Polar Move, and Ruler Mark (they use the GPU /
   `blf` overlay API)
+- Blender 4.0+ for Snap Cage (vertex-snap construction grid; uses `bpy.app.timers`)
